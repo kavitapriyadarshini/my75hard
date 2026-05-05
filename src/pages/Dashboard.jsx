@@ -989,6 +989,10 @@ export default function Dashboard() {
     () => normalizeChallengeType(profile?.challenge_type),
     [profile?.challenge_type]
   )
+  const switchTargetChallengeType =
+    challengeType === CHALLENGE_75_SOFT ? CHALLENGE_75_HARD : CHALLENGE_75_SOFT
+  const switchTargetChallengeLabel =
+    switchTargetChallengeType === CHALLENGE_75_SOFT ? '75 SOFT' : '75 HARD'
   const challengeHeaderLabel = is75Soft(challengeType) ? '75 SOFT' : '75 HARD'
   const challengeHeaderClass = is75Soft(challengeType) ? 'dash-logo--soft' : 'dash-logo--hard'
   const waterTarget = useMemo(() => waterTargetMl(challengeType), [challengeType])
@@ -1246,17 +1250,27 @@ export default function Dashboard() {
     const recalculatedMacros = (() => {
       const w = Number(prof.weight_kg)
       const h = Number(prof.height_cm)
-      if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return null
-      const calc = MACRO_CALC(w, h, prof.gender)
-      const soft = is75Soft(ctLoad)
+      const age = Number(prof.age)
+      if (
+        !Number.isFinite(w) ||
+        !Number.isFinite(h) ||
+        !Number.isFinite(age) ||
+        w <= 0 ||
+        h <= 0 ||
+        age < 16 ||
+        age > 80
+      ) {
+        return null
+      }
+      const calc = MACRO_CALC(w, h, prof.gender, age, ctLoad)
       return {
         calories: calc.calories,
         protein: calc.protein,
         carbs: calc.carbs,
         fat: calc.fat,
         fiber: calc.fiber,
-        waterLiters: soft ? 3 : 3.7,
-        waterMl: soft ? 3000 : 3700,
+        waterLiters: calc.waterLiters,
+        waterMl: calc.waterMl,
       }
     })()
     if (recalculatedMacros) {
@@ -1292,23 +1306,36 @@ export default function Dashboard() {
       .eq('challenge_type', ctLoad)
       .order('attempt_number', { ascending: true })
 
-    if (!attErr && (!attRows || attRows.length === 0)) {
-      const ins = await supabase.from('attempts').insert({
-        user_id: uid,
-        attempt_number: 1,
-        start_date: prof.start_date ?? t,
-        challenge_type: ctLoad,
-      })
-      if (!ins.error) {
-        const again = await supabase
-          .from('attempts')
-          .select('*')
-          .eq('user_id', uid)
-          .eq('challenge_type', ctLoad)
-          .order('attempt_number', { ascending: true })
-        attRows = again.data
+    if (!attErr) {
+      const hasActive = (attRows ?? []).some((a) => !a.ended_at)
+      if (!attRows || attRows.length === 0 || !hasActive) {
+        const nextNum = (attRows?.length ?? 0) + 1
+        const ins = await supabase.from('attempts').insert({
+          user_id: uid,
+          attempt_number: nextNum,
+          start_date: t,
+          challenge_type: ctLoad,
+          ended_at: null,
+        })
+        if (!ins.error) {
+          const { error: startDateErr } = await supabase
+            .from('user_profiles')
+            .update({ start_date: t })
+            .eq('user_id', uid)
+          if (!startDateErr) {
+            nextProfile = { ...nextProfile, start_date: t }
+            setProfile(nextProfile)
+          }
+          const again = await supabase
+            .from('attempts')
+            .select('*')
+            .eq('user_id', uid)
+            .eq('challenge_type', ctLoad)
+            .order('attempt_number', { ascending: true })
+          attRows = again.data
+        }
       }
-    } else if (attErr) {
+    } else {
       attRows = []
     }
     setAttempts(attRows ?? [])
@@ -1501,23 +1528,19 @@ export default function Dashboard() {
       const active = attempts.find((a) => !a.ended_at)
       if (!active) return { ok: false, message: 'No active attempt.', nextNum: null }
       const nextChallengeType = normalizeChallengeType(profileExtras.challenge_type ?? challengeType)
-      let nums = attempts.map((a) => a.attempt_number)
-      if (nextChallengeType !== challengeType) {
-        const { data: nextTypeAttempts, error: nextTypeAttemptsErr } = await supabase
-          .from('attempts')
-          .select('attempt_number')
-          .eq('user_id', uid)
-          .eq('challenge_type', nextChallengeType)
-        if (nextTypeAttemptsErr) {
-          return {
-            ok: false,
-            message: nextTypeAttemptsErr.message || 'Could not read attempts for selected challenge.',
-            nextNum: null,
-          }
+      const { count: nextTypeCount, error: nextTypeCountErr } = await supabase
+        .from('attempts')
+        .select('id', { count: 'exact', head: true })
+        .eq('user_id', uid)
+        .eq('challenge_type', nextChallengeType)
+      if (nextTypeCountErr) {
+        return {
+          ok: false,
+          message: nextTypeCountErr.message || 'Could not read attempts for selected challenge.',
+          nextNum: null,
         }
-        nums = (nextTypeAttempts ?? []).map((a) => a.attempt_number)
       }
-      const nextNum = (nums.length ? Math.max(...nums) : 0) + 1
+      const nextNum = Number(nextTypeCount ?? 0) + 1
       const y = addDaysISO(todayLocalISO(), -1)
       const t0 = todayLocalISO()
       const { error: e1 } = await supabase
@@ -1575,23 +1598,55 @@ export default function Dashboard() {
   const confirmSwitchChallenge = async () => {
     setChallengeSwitchBusy(true)
     setLoadError('')
-    const next =
-      challengeType === CHALLENGE_75_SOFT ? CHALLENGE_75_HARD : CHALLENGE_75_SOFT
-    const res = await executeChallengeRestart({
-      challenge_type: next,
-      challenge_completed_at: null,
-    })
-    setChallengeSwitchBusy(false)
-    setChallengeSwitchOpen(false)
-    if (!res.ok) {
-      setLoadError(res.message)
+    const next = switchTargetChallengeType
+    const t0 = todayLocalISO()
+
+    const { count: nextTypeCount, error: countErr } = await supabase
+      .from('attempts')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', userIdRef.current)
+      .eq('challenge_type', next)
+    if (countErr) {
+      setChallengeSwitchBusy(false)
+      setLoadError(countErr.message || 'Could not prepare switch.')
       return
     }
+
+    const { error: profileErr } = await supabase
+      .from('user_profiles')
+      .update({
+        challenge_type: next,
+        start_date: t0,
+        challenge_completed_at: null,
+      })
+      .eq('user_id', userIdRef.current)
+    if (profileErr) {
+      setChallengeSwitchBusy(false)
+      setLoadError(profileErr.message || 'Could not update challenge.')
+      return
+    }
+
+    const { error: attemptErr } = await supabase.from('attempts').insert({
+      user_id: userIdRef.current,
+      challenge_type: next,
+      attempt_number: Number(nextTypeCount ?? 0) + 1,
+      start_date: t0,
+      ended_at: null,
+    })
+    setChallengeSwitchBusy(false)
+    if (attemptErr) {
+      setLoadError(attemptErr.message || 'Could not create new attempt.')
+      return
+    }
+
+    setChallengeSwitchOpen(false)
     setTab('today')
+    setProgressAttemptId(null)
+    await load()
     setAttemptBannerMessage(
       next === CHALLENGE_75_HARD
-        ? 'Switched to 75 HARD — new attempt from today.'
-        : 'Switched to 75 Soft — new attempt from today.'
+        ? 'Switched to 75 HARD — fresh Day 1 started.'
+        : 'Switched to 75 SOFT — fresh Day 1 started.'
     )
   }
 
@@ -3774,6 +3829,10 @@ export default function Dashboard() {
                 <span className="dash-profile-label">Start date</span>
                 <span className="dash-profile-value">{profile.start_date ?? '—'}</span>
               </div>
+              <div className="dash-profile-row">
+                <span className="dash-profile-label">Age</span>
+                <span className="dash-profile-value">{profile.age ?? '—'}</span>
+              </div>
               <button
                 type="button"
                 className="dash-profile-switch-link"
@@ -3798,7 +3857,8 @@ export default function Dashboard() {
               Switch challenge?
             </h2>
             <p className="dash-restart-body">
-              Switching will keep your data but reset your challenge. Are you sure?
+              Switching to {switchTargetChallengeLabel} will start a fresh Day 1 for that challenge.
+              Your current progress is saved and you can switch back anytime.
             </p>
             <div className="dash-restart-actions-row">
               <button
@@ -3815,7 +3875,7 @@ export default function Dashboard() {
                 onClick={() => void confirmSwitchChallenge()}
                 disabled={challengeSwitchBusy}
               >
-                {challengeSwitchBusy ? 'Working…' : 'Yes, reset & switch'}
+                {challengeSwitchBusy ? 'Working…' : `Switch to ${switchTargetChallengeLabel}`}
               </button>
             </div>
           </div>

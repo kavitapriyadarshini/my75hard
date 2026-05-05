@@ -1,29 +1,29 @@
-/** Default age (years) for macro calculations. */
-const DEFAULT_AGE_YEARS = 30
-
 /** Mifflin-St Jeor basal metabolic rate in kcal/day. */
-function mifflinStJeorBmr(weightKg, heightCm, gender) {
+function mifflinStJeorBmr(weightKg, heightCm, gender, ageYears) {
   const g = String(gender).toLowerCase()
   const isMale = g === 'male' || g === 'm'
-  const base = 10 * weightKg + 6.25 * heightCm - 5 * DEFAULT_AGE_YEARS
+  const base = 10 * weightKg + 6.25 * heightCm - 5 * ageYears
   return isMale ? base + 5 : base - 161
 }
 
 /**
- * Daily targets from Mifflin-St Jeor BMR × 1.55 (moderately active),
+ * Daily targets from Mifflin-St Jeor BMR × challenge activity multiplier,
  * with protein 1.8 g/kg, fat 25% calories, carbs as remainder, and fixed fiber/water targets.
  */
-export function MACRO_CALC(weightKg, heightCm, gender) {
-  const bmr = mifflinStJeorBmr(weightKg, heightCm, gender)
-  const tdee = bmr * 1.55
+export function MACRO_CALC(weightKg, heightCm, gender, age, challengeType) {
+  const ageYears = Number.isFinite(Number(age)) ? Math.max(16, Math.min(80, Number(age))) : 30
+  const type = String(challengeType || '').toLowerCase()
+  const isSoft = type === '75soft'
+  const bmr = mifflinStJeorBmr(weightKg, heightCm, gender, ageYears)
+  const tdee = bmr * (isSoft ? 1.4 : 1.55)
   const calories = Math.round(tdee)
 
   const protein = Math.round(weightKg * 1.8)
   const fat = Math.round((calories * 0.25) / 9)
   const carbs = Math.round((calories - protein * 4 - fat * 9) / 4)
   const fiber = 25
-  const waterMl = 3700
-  const waterLiters = 3.7
+  const waterMl = isSoft ? 3000 : 3700
+  const waterLiters = isSoft ? 3 : 3.7
 
   return { calories, protein, carbs, fat, fiber, waterMl, waterLiters }
 }

@@ -38,11 +38,11 @@ function todayLocalISO() {
   return `${y}-${m}-${day}`
 }
 
-function computeMacros(weightKg, heightCm, gender) {
+function computeMacros(weightKg, heightCm, gender, age, challengeType) {
   const g = String(gender).toLowerCase()
   if (g === 'other') {
-    const a = MACRO_CALC(weightKg, heightCm, 'male')
-    const b = MACRO_CALC(weightKg, heightCm, 'female')
+    const a = MACRO_CALC(weightKg, heightCm, 'male', age, challengeType)
+    const b = MACRO_CALC(weightKg, heightCm, 'female', age, challengeType)
     return {
       calories: Math.round((a.calories + b.calories) / 2),
       protein: Math.round((a.protein + b.protein) / 2),
@@ -51,7 +51,7 @@ function computeMacros(weightKg, heightCm, gender) {
       fiber: Math.round((a.fiber + b.fiber) / 2),
     }
   }
-  return MACRO_CALC(weightKg, heightCm, gender)
+  return MACRO_CALC(weightKg, heightCm, gender, age, challengeType)
 }
 
 function parseMetricBody(
@@ -97,6 +97,7 @@ export default function Onboarding() {
   const [heightCmField, setHeightCmField] = useState('')
   const [heightFt, setHeightFt] = useState('')
   const [heightIn, setHeightIn] = useState('')
+  const [ageField, setAgeField] = useState('')
 
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
@@ -149,16 +150,20 @@ export default function Onboarding() {
   )
 
   const macroPreview = useMemo(() => {
+    const age = Number(ageField)
     if (
       !Number.isFinite(weightKg) ||
       !Number.isFinite(heightCm) ||
+      !Number.isFinite(age) ||
       weightKg <= 0 ||
-      heightCm <= 0
+      heightCm <= 0 ||
+      age < 16 ||
+      age > 80
     ) {
       return null
     }
-    return computeMacros(weightKg, heightCm, gender)
-  }, [weightKg, heightCm, gender])
+    return computeMacros(weightKg, heightCm, gender, age, challengeType)
+  }, [weightKg, heightCm, gender, ageField, challengeType])
 
   const toggleRestriction = useCallback((label) => {
     setRestrictions((prev) =>
@@ -194,6 +199,11 @@ export default function Onboarding() {
     }
     if (!Number.isFinite(h) || h <= 0 || h > 300) {
       setError('Enter a valid height.')
+      return false
+    }
+    const age = Number(ageField)
+    if (!Number.isFinite(age) || age < 16 || age > 80) {
+      setError('Enter a valid age (16-80).')
       return false
     }
     setError('')
@@ -234,6 +244,7 @@ export default function Onboarding() {
       username,
       weight_kg: Math.round(wKg * 10) / 10,
       height_cm: Math.round(hCm * 10) / 10,
+      age: Number(ageField),
       gender,
       diet_type: dietType,
       restrictions: restrictions.length ? restrictions : [],
@@ -254,6 +265,7 @@ export default function Onboarding() {
       .from('attempts')
       .select('id')
       .eq('user_id', user.id)
+      .eq('challenge_type', challengeType)
       .limit(1)
       .maybeSingle()
     if (!existingAttempt) {
@@ -261,6 +273,7 @@ export default function Onboarding() {
         user_id: user.id,
         attempt_number: 1,
         start_date: startDate,
+        challenge_type: challengeType,
       })
       if (attErr) {
         setError(attErr.message || 'Profile saved but attempt could not be created.')
@@ -463,6 +476,22 @@ export default function Onboarding() {
             </div>
 
             <div className="onboarding-field">
+              <label htmlFor="age">Age</label>
+              <input
+                id="age"
+                className="onboarding-input"
+                type="number"
+                inputMode="numeric"
+                min="16"
+                max="80"
+                step="1"
+                placeholder="e.g. 28"
+                value={ageField}
+                onChange={(e) => setAgeField(e.target.value)}
+              />
+            </div>
+
+            <div className="onboarding-field">
               {unitSystem === 'metric' ? (
                 <>
                   <label htmlFor="height-cm">Height (cm)</label>
@@ -580,6 +609,15 @@ export default function Onboarding() {
                     <span className="onboarding-macro-unit"> L / day (target)</span>
                   </div>
                 </div>
+                <p className="onboarding-desc" style={{ marginTop: '0.85rem', marginBottom: '0.35rem' }}>
+                  {is75Soft(challengeType)
+                    ? 'Calculated for 1 daily workout · Activity level: moderate'
+                    : 'Calculated for 2 daily workouts · Activity level: moderately active'}
+                </p>
+                <p className="onboarding-desc" style={{ marginBottom: 0 }}>
+                  Based on your stats: {Math.round(weightKg * 10) / 10}kg · {Math.round(heightCm * 10) / 10}cm · Age{' '}
+                  {Number(ageField)}
+                </p>
               </>
             )}
 
